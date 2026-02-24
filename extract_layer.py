@@ -38,13 +38,6 @@ class ExtractTransparentLayer:
                     "multiline": False,
                     "tooltip": "Hex color code of the background (e.g. #FFFFFF)"
                 }),
-                "alpha_boost": ("FLOAT", {
-                    "default": 1.0,
-                    "min": 1.0,
-                    "max": 10.0,
-                    "step": 0.1,
-                    "tooltip": "Alpha compensation strength. 1.0 = no change, higher = more opaque (gamma correction: α^(1/boost))"
-                }),
             },
         }
 
@@ -74,7 +67,7 @@ class ExtractTransparentLayer:
         b = int(hex_color[4:6], 16) / 255.0
         return (r, g, b)
 
-    def extract_layer(self, image: torch.Tensor, layer_color: str, background_color: str, alpha_boost: float = 1.0):
+    def extract_layer(self, image: torch.Tensor, layer_color: str, background_color: str):
         """
         Extract the transparent layer from the merged image.
 
@@ -82,8 +75,6 @@ class ExtractTransparentLayer:
             image: Input tensor of shape (B, H, W, 3) in [0, 1] range.
             layer_color: Hex color code of the layer.
             background_color: Hex color code of the background.
-            alpha_boost: Gamma-based alpha compensation. Values > 1.0 make
-                         semi-transparent areas more opaque.
 
         Returns:
             Tuple of (output_image,) where output_image is shape (B, H, W, 4)
@@ -131,12 +122,6 @@ class ExtractTransparentLayer:
 
         # Clamp alpha to [0, 1]
         alpha = np.clip(alpha, 0.0, 1.0)
-
-        # Apply gamma-based alpha compensation: α' = α^(1/boost)
-        # boost > 1.0 pushes semi-transparent pixels towards full opacity
-        if alpha_boost > 1.0:
-            mask = alpha > 0.0
-            alpha[mask] = np.power(alpha[mask], 1.0 / alpha_boost)
 
         # Build RGBA output: layer color + recovered alpha
         output = np.zeros((batch_size, height, width, 4), dtype=np.float64)
