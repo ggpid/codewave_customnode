@@ -32,8 +32,8 @@ class ExtractWindows:
                     "min": 0,
                     "max": 50,
                     "step": 1,
-                    "tooltip": "Pixels to trim from window edges. "
-                               "Removes anti-aliased boundary artifacts from the mask."
+                    "tooltip": "Pixels to shrink from the building's outer boundary. "
+                               "Removes anti-aliased edge artifacts without affecting window shapes."
                 }),
             },
         }
@@ -74,12 +74,8 @@ class ExtractWindows:
         for b in range(batch_size):
             filled = ndimage.binary_fill_holes(structure_binary[b])
             if edge_erode > 0:
-                structure_expanded = ndimage.binary_dilation(
-                    structure_binary[b], iterations=edge_erode
-                )
-            else:
-                structure_expanded = structure_binary[b]
-            windows = filled & ~structure_expanded
+                filled = ndimage.binary_erosion(filled, iterations=edge_erode)
+            windows = filled & ~structure_binary[b]
             windows_mask[b] = windows.astype(np.float64)
 
         output = np.zeros((batch_size, height, width, 4), dtype=np.float64)
