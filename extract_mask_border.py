@@ -41,15 +41,6 @@ class ExtractMaskBorder:
         "Inverts, fills holes, erodes, then subtracts to isolate the border strip."
     )
 
-    @staticmethod
-    def _erode_float(mask: np.ndarray, iterations: int) -> np.ndarray:
-        """Erode a float mask by applying min-filter repeatedly."""
-        struct = ndimage.generate_binary_structure(2, 1)
-        result = mask
-        for _ in range(iterations):
-            result = ndimage.minimum_filter(result, footprint=struct)
-        return result
-
     def extract_border(self, mask: torch.Tensor, erode_iterations: int):
         mask_np = mask.cpu().numpy()
 
@@ -57,18 +48,16 @@ class ExtractMaskBorder:
             mask_np = mask_np[np.newaxis, ...]
 
         results = []
+        struct = ndimage.generate_binary_structure(2, 1)
 
         for i in range(mask_np.shape[0]):
             m = mask_np[i]
 
             inverted = 1.0 - m
-
-            binary_inv = inverted > 0.5
-            filled_binary = ndimage.binary_fill_holes(binary_inv)
-            hole_fill_diff = filled_binary.astype(np.float32) - binary_inv.astype(np.float32)
-            filled = np.clip(inverted + hole_fill_diff, 0.0, 1.0)
-
-            eroded = self._erode_float(filled, erode_iterations)
+            filled = ndimage.binary_fill_holes(inverted > 0.5).astype(np.float32)
+            eroded = ndimage.binary_erosion(
+                filled > 0.5, structure=struct, iterations=erode_iterations
+            ).astype(np.float32)
 
             border = np.clip(m - (1.0 - eroded), 0.0, 1.0)
             results.append(border)
