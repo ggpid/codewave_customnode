@@ -27,6 +27,14 @@ class ExtractWindows:
                     "tooltip": "Threshold for binarizing the structure mask. "
                                "Pixels above this value are considered building structure."
                 }),
+                "edge_erode": ("INT", {
+                    "default": 2,
+                    "min": 0,
+                    "max": 50,
+                    "step": 1,
+                    "tooltip": "Pixels to trim from window edges. "
+                               "Removes anti-aliased boundary artifacts from the mask."
+                }),
             },
         }
 
@@ -46,6 +54,7 @@ class ExtractWindows:
         building_image: torch.Tensor,
         structure_mask: torch.Tensor,
         mask_threshold: float,
+        edge_erode: int,
     ):
         img_np = building_image.cpu().numpy().astype(np.float64)
         mask_np = structure_mask.cpu().numpy().astype(np.float64)
@@ -64,7 +73,13 @@ class ExtractWindows:
 
         for b in range(batch_size):
             filled = ndimage.binary_fill_holes(structure_binary[b])
-            windows = filled & ~structure_binary[b]
+            if edge_erode > 0:
+                structure_expanded = ndimage.binary_dilation(
+                    structure_binary[b], iterations=edge_erode
+                )
+            else:
+                structure_expanded = structure_binary[b]
+            windows = filled & ~structure_expanded
             windows_mask[b] = windows.astype(np.float64)
 
         output = np.zeros((batch_size, height, width, 4), dtype=np.float64)
