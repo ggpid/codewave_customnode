@@ -55,11 +55,8 @@ class ExtractMaskBorder:
 
             inverted = 1.0 - m
             filled = ndimage.binary_fill_holes(inverted > 0.5).astype(np.float32)
-            eroded = ndimage.binary_erosion(
-                filled > 0.5, structure=struct, iterations=erode_iterations
-            ).astype(np.float32)
 
-            border = np.clip(m - (1.0 - eroded), 0.0, 1.0)
+            border = np.clip(m - 1.0, 0.0, 1.0)
             results.append(border)
 
         output = np.stack(results, axis=0)
