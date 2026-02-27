@@ -2,10 +2,22 @@ import torch
 import numpy as np
 from scipy import ndimage
 
+
+def _parse_hex_color(hex_str: str) -> tuple[float, float, float]:
+    """Parse hex color string (e.g. '#FF00AA' or 'FF00AA') to (r, g, b) in 0..1 range."""
+    hex_str = hex_str.strip().lstrip("#")
+    if len(hex_str) != 6:
+        raise ValueError(f"Invalid hex color: '#{hex_str}'. Expected 6-digit hex like '#000000'.")
+    r = int(hex_str[0:2], 16) / 255.0
+    g = int(hex_str[2:4], 16) / 255.0
+    b = int(hex_str[4:6], 16) / 255.0
+    return (r, g, b)
+
+
 class BlackBGRemoveByDistance:
     """
-    Remove (make transparent) pixels close to pure black using RGB distance.
-    distance = sqrt(r^2 + g^2 + b^2)
+    Remove (make transparent) pixels close to a target color using RGB distance.
+    distance = sqrt((r-tr)^2 + (g-tg)^2 + (b-tb)^2)
     If distance < threshold => alpha = 0
     """
 
@@ -14,13 +26,16 @@ class BlackBGRemoveByDistance:
         return {
             "required": {
                 "image": ("IMAGE",),
-                # threshold in 0..1 space (ComfyUI IMAGE is float32 0..1)
+                "target_color": ("STRING", {
+                    "default": "#000000",
+                    "tooltip": "Hex color code of the background to remove (e.g. #000000 for black, #FFFFFF for white, #00FF00 for green)."
+                }),
                 "threshold": ("FLOAT", {
-                    "default": 0.06,   # ~15/255
+                    "default": 0.06,
                     "min": 0.0,
-                    "max": 1.732,      # sqrt(1^2+1^2+1^2)
+                    "max": 1.732,
                     "step": 0.001,
-                    "tooltip": "RGB distance to black (0..~1.732). Smaller = stricter. 0.06≈15/255"
+                    "tooltip": "RGB distance to target color (0..~1.732). Smaller = stricter. 0.06≈15/255"
                 }),
                 "keep_original_alpha": ("BOOLEAN", {
                     "default": True,
@@ -34,16 +49,12 @@ class BlackBGRemoveByDistance:
     FUNCTION = "remove_black_bg"
     CATEGORY = "image/alpha"
 
-    def remove_black_bg(self, image: torch.Tensor, threshold: float, keep_original_alpha: bool):
-        """
-        image: ComfyUI IMAGE tensor, typically [B,H,W,3] float 0..1
-               sometimes can be [B,H,W,4] if already RGBA
-        returns RGBA [B,H,W,4]
-        """
+    def remove_black_bg(self, image: torch.Tensor, target_color: str, threshold: float, keep_original_alpha: bool):
+        tr, tg, tb = _parse_hex_color(target_color)
+
         if image.dtype != torch.float32 and image.dtype != torch.float16 and image.dtype != torch.bfloat16:
             image = image.float()
 
-        # Ensure batch dimension
         if image.dim() == 3:
             image = image.unsqueeze(0)
 
@@ -53,11 +64,10 @@ class BlackBGRemoveByDistance:
 
         rgb = image[..., :3].clamp(0.0, 1.0)
 
-        # distance to black in 0..1 domain
-        # sqrt(r^2+g^2+b^2)
-        dist = torch.sqrt(torch.sum(rgb * rgb, dim=-1))  # [B,H,W]
+        target = torch.tensor([tr, tg, tb], device=image.device, dtype=image.dtype)
+        diff = rgb - target
+        dist = torch.sqrt(torch.sum(diff * diff, dim=-1))  # [B,H,W]
 
-        # mask for "near black" pixels
         remove_mask = dist < float(threshold)  # [B,H,W] bool
 
         if c == 4 and keep_original_alpha:
@@ -65,7 +75,6 @@ class BlackBGRemoveByDistance:
         else:
             alpha = torch.ones((b, h, w), device=image.device, dtype=image.dtype)
 
-        # set alpha=0 where remove_mask is true
         alpha = torch.where(remove_mask, torch.zeros_like(alpha), alpha)
 
         out = torch.cat([rgb, alpha.unsqueeze(-1)], dim=-1)  # [B,H,W,4]
@@ -74,9 +83,9 @@ class BlackBGRemoveByDistance:
 
 class BlackBGRemoveSmart:
     """
-    Remove black background while preserving dark regions inside the subject.
-    Only removes black pixel regions that are connected to the image border,
-    keeping isolated dark areas (windows, shadows, etc.) intact.
+    Remove a target-color background while preserving similar-colored regions inside the subject.
+    Only removes pixel regions connected to the image border,
+    keeping isolated similar-colored areas (windows, shadows, etc.) intact.
     Optionally applies feathered (smooth) edges at the boundary.
     """
 
@@ -85,12 +94,16 @@ class BlackBGRemoveSmart:
         return {
             "required": {
                 "image": ("IMAGE",),
+                "target_color": ("STRING", {
+                    "default": "#000000",
+                    "tooltip": "Hex color code of the background to remove (e.g. #000000 for black, #FFFFFF for white, #00FF00 for green)."
+                }),
                 "threshold": ("FLOAT", {
                     "default": 0.06,
                     "min": 0.0,
                     "max": 1.732,
                     "step": 0.001,
-                    "tooltip": "RGB distance to black (0..~1.732). Smaller = stricter. 0.06≈15/255"
+                    "tooltip": "RGB distance to target color (0..~1.732). Smaller = stricter. 0.06≈15/255"
                 }),
                 "feather_radius": ("INT", {
                     "default": 3,
@@ -118,11 +131,15 @@ class BlackBGRemoveSmart:
     def remove_black_bg_smart(
         self,
         image: torch.Tensor,
+        target_color: str,
         threshold: float,
         feather_radius: int,
         connectivity: str,
         keep_original_alpha: bool,
     ):
+        tr, tg, tb = _parse_hex_color(target_color)
+        target_np = np.array([tr, tg, tb], dtype=np.float32)
+
         if image.dtype != torch.float32 and image.dtype != torch.float16 and image.dtype != torch.bfloat16:
             image = image.float()
 
@@ -143,10 +160,11 @@ class BlackBGRemoveSmart:
         for i in range(b):
             rgb_np = rgb[i].cpu().numpy()  # [H, W, 3]
 
-            dist = np.sqrt(np.sum(rgb_np * rgb_np, axis=-1))  # [H, W]
-            black_mask = dist < float(threshold)
+            diff = rgb_np - target_np
+            dist = np.sqrt(np.sum(diff * diff, axis=-1))  # [H, W]
+            color_mask = dist < float(threshold)
 
-            labeled, _ = ndimage.label(black_mask, structure=structure)
+            labeled, _ = ndimage.label(color_mask, structure=structure)
 
             border_labels = set()
             border_labels |= set(labeled[0, :].ravel())
@@ -155,15 +173,10 @@ class BlackBGRemoveSmart:
             border_labels |= set(labeled[:, -1].ravel())
             border_labels.discard(0)
 
-            remove_mask = np.isin(labeled, list(border_labels)) if border_labels else np.zeros_like(black_mask)
+            remove_mask = np.isin(labeled, list(border_labels)) if border_labels else np.zeros_like(color_mask)
 
-            # Dilate remove_mask to capture dark fringe pixels on diagonal edges
             expanded = ndimage.binary_dilation(remove_mask, structure=structure, iterations=2)
 
-            # Use actual color distance for natural anti-aliased alpha in the transition zone.
-            # Pixels deep in the background (low dist) → alpha≈0,
-            # pixels at the boundary (dist near threshold) → smooth ramp,
-            # pixels outside the expanded zone → alpha=1.
             color_alpha = np.clip(dist / float(threshold), 0.0, 1.0).astype(np.float32)
             alpha_np = np.where(expanded, color_alpha, 1.0)
 

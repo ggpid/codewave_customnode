@@ -15,8 +15,8 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "ExtractTransparentLayer": "Extract Transparent Layer",
     "ColorToTransparent": "Color To Transparent",
     "ExtractMaskBorder": "Extract Mask Border",
-    "BlackBGRemoveByDistance": "Remove Black BG (Distance)",
-    "BlackBGRemoveSmart": "Remove Black BG (Smart)",
+    "BlackBGRemoveByDistance": "Remove Color BG (Distance)",
+    "BlackBGRemoveSmart": "Remove Color BG (Smart)",
 }
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]
