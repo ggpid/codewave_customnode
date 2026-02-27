@@ -1,7 +1,6 @@
 import torch
 import numpy as np
 from scipy import ndimage
-from scipy.ndimage import distance_transform_edt
 
 class BlackBGRemoveByDistance:
     """
@@ -158,17 +157,19 @@ class BlackBGRemoveSmart:
 
             remove_mask = np.isin(labeled, list(border_labels)) if border_labels else np.zeros_like(black_mask)
 
+            # Dilate remove_mask to capture dark fringe pixels on diagonal edges
+            expanded = ndimage.binary_dilation(remove_mask, structure=structure, iterations=2)
+
+            # Use actual color distance for natural anti-aliased alpha in the transition zone.
+            # Pixels deep in the background (low dist) → alpha≈0,
+            # pixels at the boundary (dist near threshold) → smooth ramp,
+            # pixels outside the expanded zone → alpha=1.
+            color_alpha = np.clip(dist / float(threshold), 0.0, 1.0).astype(np.float32)
+            alpha_np = np.where(expanded, color_alpha, 1.0)
+
             if feather_radius > 0:
-                alpha_np = 1.0 - remove_mask.astype(np.float32)
                 alpha_np = ndimage.gaussian_filter(alpha_np, sigma=feather_radius)
                 alpha_np = np.clip(alpha_np, 0.0, 1.0)
-            else:
-                # Anti-aliasing via signed distance field (~1.5px smooth transition)
-                dist_inside = distance_transform_edt(remove_mask)
-                dist_outside = distance_transform_edt(~remove_mask)
-                signed_dist = dist_outside - dist_inside
-                aa_width = 1.5
-                alpha_np = np.clip((signed_dist + aa_width * 0.5) / aa_width, 0.0, 1.0).astype(np.float32)
 
             alpha_t = torch.from_numpy(alpha_np).to(device=image.device, dtype=image.dtype)
 
