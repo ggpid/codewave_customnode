@@ -1,6 +1,7 @@
 import torch
 import numpy as np
 from scipy import ndimage
+from scipy.ndimage import distance_transform_edt
 
 class BlackBGRemoveByDistance:
     """
@@ -162,7 +163,12 @@ class BlackBGRemoveSmart:
                 alpha_np = ndimage.gaussian_filter(alpha_np, sigma=feather_radius)
                 alpha_np = np.clip(alpha_np, 0.0, 1.0)
             else:
-                alpha_np = 1.0 - remove_mask.astype(np.float32)
+                # Anti-aliasing via signed distance field (~1.5px smooth transition)
+                dist_inside = distance_transform_edt(remove_mask)
+                dist_outside = distance_transform_edt(~remove_mask)
+                signed_dist = dist_outside - dist_inside
+                aa_width = 1.5
+                alpha_np = np.clip((signed_dist + aa_width * 0.5) / aa_width, 0.0, 1.0).astype(np.float32)
 
             alpha_t = torch.from_numpy(alpha_np).to(device=image.device, dtype=image.dtype)
 
