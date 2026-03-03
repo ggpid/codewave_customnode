@@ -1,5 +1,6 @@
 import torch
 import numpy as np
+from scipy.ndimage import median_filter
 
 
 class ExtractTransparentLayer:
@@ -45,6 +46,20 @@ class ExtractTransparentLayer:
                     "step": 0.1,
                     "tooltip": "Alpha compensation strength. 1.0 = no change, higher = more opaque (gamma correction: α^(1/boost))"
                 }),
+                "alpha_threshold": ("FLOAT", {
+                    "default": 0.02,
+                    "min": 0.0,
+                    "max": 0.5,
+                    "step": 0.005,
+                    "tooltip": "Alpha values below this threshold are set to 0 before boosting. Removes noise from AI-generated images."
+                }),
+                "denoise_radius": ("INT", {
+                    "default": 0,
+                    "min": 0,
+                    "max": 10,
+                    "step": 1,
+                    "tooltip": "Median filter radius for alpha channel denoising. 0 = off, 1-3 recommended for light noise."
+                }),
             },
         }
 
@@ -74,7 +89,8 @@ class ExtractTransparentLayer:
         b = int(hex_color[4:6], 16) / 255.0
         return (r, g, b)
 
-    def extract_layer(self, image: torch.Tensor, layer_color: str, background_color: str, alpha_boost: float = 1.0):
+    def extract_layer(self, image: torch.Tensor, layer_color: str, background_color: str,
+                       alpha_boost: float = 1.0, alpha_threshold: float = 0.02, denoise_radius: int = 0):
         """
         Extract the transparent layer from the merged image.
 
@@ -84,6 +100,10 @@ class ExtractTransparentLayer:
             background_color: Hex color code of the background.
             alpha_boost: Gamma-based alpha compensation. Values > 1.0 make
                          semi-transparent areas more opaque.
+            alpha_threshold: Alpha values below this are zeroed out before
+                             boosting, preventing noise amplification.
+            denoise_radius: Median filter kernel radius for alpha denoising.
+                            0 disables filtering.
 
         Returns:
             Tuple of (output_image,) where output_image is shape (B, H, W, 4)
@@ -131,6 +151,16 @@ class ExtractTransparentLayer:
 
         # Clamp alpha to [0, 1]
         alpha = np.clip(alpha, 0.0, 1.0)
+
+        # Denoise: median filter smooths out salt-and-pepper noise in alpha
+        if denoise_radius > 0:
+            kernel_size = 2 * denoise_radius + 1
+            for b_idx in range(batch_size):
+                alpha[b_idx] = median_filter(alpha[b_idx], size=kernel_size)
+
+        # Denoise: threshold cuts off low-level noise before boost amplifies it
+        if alpha_threshold > 0.0:
+            alpha[alpha < alpha_threshold] = 0.0
 
         # Apply gamma-based alpha compensation: α' = α^(1/boost)
         # boost > 1.0 pushes semi-transparent pixels towards full opacity
