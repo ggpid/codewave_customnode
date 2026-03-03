@@ -1,6 +1,6 @@
 import torch
 import numpy as np
-from scipy.ndimage import median_filter, minimum_filter
+from scipy.ndimage import median_filter
 
 
 class ExtractTransparentLayer:
@@ -152,25 +152,14 @@ class ExtractTransparentLayer:
         # Clamp alpha to [0, 1]
         alpha = np.clip(alpha, 0.0, 1.0)
 
-        # Denoise: neighborhood-based flattening
-        # Compare each pixel with its neighbors; if within threshold, flatten.
-        # Flatten target: background (alpha=0) if background pixels exist nearby,
-        # otherwise the darkest neighbor.
-        if denoise_radius > 0 and alpha_threshold > 0.0:
+        # Denoise: median filter smooths out salt-and-pepper noise in alpha
+        if denoise_radius > 0:
             kernel_size = 2 * denoise_radius + 1
             for b_idx in range(batch_size):
-                original = alpha[b_idx].copy()
+                alpha[b_idx] = median_filter(alpha[b_idx], size=kernel_size)
 
-                local_median = median_filter(original, size=kernel_size)
-                local_min = minimum_filter(original, size=kernel_size)
-
-                flatten_mask = np.abs(original - local_median) <= alpha_threshold
-
-                bg_in_neighborhood = local_min < alpha_threshold
-                flatten_target = np.where(bg_in_neighborhood, 0.0, local_min)
-
-                alpha[b_idx] = np.where(flatten_mask, flatten_target, original)
-        elif alpha_threshold > 0.0:
+        # Denoise: threshold cuts off low-level noise before boost amplifies it
+        if alpha_threshold > 0.0:
             alpha[alpha < alpha_threshold] = 0.0
 
         # Apply gamma-based alpha compensation: α' = α^(1/boost)
