@@ -1,5 +1,6 @@
 import torch
 import numpy as np
+from scipy.ndimage import gaussian_filter
 
 
 class ColorToTransparent:
@@ -9,6 +10,10 @@ class ColorToTransparent:
     Takes a hex color code and a threshold value. Pixels whose RGB distance
     to the target color is within the threshold become transparent.
     Pixels near the threshold boundary are feathered for smooth edges.
+
+    Includes denoise and noise_gate options to handle noise commonly
+    found in AI-generated images, preventing noise amplification
+    during subsequent alpha_boost processing.
     """
 
     @classmethod
@@ -34,6 +39,20 @@ class ColorToTransparent:
                     "max": 128,
                     "step": 1,
                     "tooltip": "Feather radius for smooth transition at the threshold boundary. 0 = hard edge."
+                }),
+                "denoise": ("INT", {
+                    "default": 0,
+                    "min": 0,
+                    "max": 20,
+                    "step": 1,
+                    "tooltip": "Gaussian blur sigma applied to the distance map before alpha computation. Smooths out per-pixel noise from AI-generated images. 0 = disabled."
+                }),
+                "noise_gate": ("FLOAT", {
+                    "default": 0.0,
+                    "min": 0.0,
+                    "max": 0.5,
+                    "step": 0.01,
+                    "tooltip": "Alpha values below this threshold are snapped to 0. Acts as a noise floor to prevent residual noise from being amplified by alpha_boost. 0 = disabled."
                 }),
             },
         }
@@ -63,7 +82,9 @@ class ColorToTransparent:
         b = int(hex_color[4:6], 16) / 255.0
         return (r, g, b)
 
-    def color_to_transparent(self, image: torch.Tensor, hex_color: str, threshold: int, feather: int):
+    def color_to_transparent(self, image: torch.Tensor, hex_color: str,
+                              threshold: int, feather: int,
+                              denoise: int = 0, noise_gate: float = 0.0):
         target = np.array(self.hex_to_rgb(hex_color), dtype=np.float64)
         threshold_norm = threshold / 255.0
         feather_norm = feather / 255.0
@@ -73,18 +94,21 @@ class ColorToTransparent:
 
         rgb = img_np[:, :, :, :3]
 
-        # Euclidean distance per pixel to the target color
         diff = rgb - target[np.newaxis, np.newaxis, np.newaxis, :]
         distance = np.sqrt(np.sum(diff ** 2, axis=-1))
 
+        if denoise > 0:
+            for b in range(batch_size):
+                distance[b] = gaussian_filter(distance[b], sigma=denoise)
+
         if feather_norm > 0:
-            # Smooth transition: fully transparent inside threshold,
-            # linear ramp from transparent to opaque in the feather zone
             alpha = np.clip((distance - threshold_norm) / feather_norm, 0.0, 1.0)
         else:
             alpha = np.where(distance <= threshold_norm, 0.0, 1.0)
 
-        # Preserve existing alpha if the input already has 4 channels
+        if noise_gate > 0:
+            alpha = np.where(alpha < noise_gate, 0.0, alpha)
+
         if channels == 4:
             existing_alpha = img_np[:, :, :, 3]
             alpha = np.minimum(alpha, existing_alpha)
