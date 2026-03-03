@@ -14,74 +14,7 @@ def _parse_hex_color(hex_str: str) -> tuple[float, float, float]:
     return (r, g, b)
 
 
-class BlackBGRemoveByDistance:
-    """
-    Remove (make transparent) pixels close to a target color using RGB distance.
-    distance = sqrt((r-tr)^2 + (g-tg)^2 + (b-tb)^2)
-    If distance < threshold => alpha = 0
-    """
-
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "image": ("IMAGE",),
-                "target_color": ("STRING", {
-                    "default": "#000000",
-                    "tooltip": "Hex color code of the background to remove (e.g. #000000 for black, #FFFFFF for white, #00FF00 for green)."
-                }),
-                "threshold": ("FLOAT", {
-                    "default": 0.06,
-                    "min": 0.0,
-                    "max": 1.732,
-                    "step": 0.001,
-                    "tooltip": "RGB distance to target color (0..~1.732). Smaller = stricter. 0.06≈15/255"
-                }),
-                "keep_original_alpha": ("BOOLEAN", {
-                    "default": True,
-                    "tooltip": "If input has alpha, preserve it for non-removed pixels."
-                }),
-            }
-        }
-
-    RETURN_TYPES = ("IMAGE",)
-    RETURN_NAMES = ("image_rgba",)
-    FUNCTION = "remove_black_bg"
-    CATEGORY = "image/alpha"
-
-    def remove_black_bg(self, image: torch.Tensor, target_color: str, threshold: float, keep_original_alpha: bool):
-        tr, tg, tb = _parse_hex_color(target_color)
-
-        if image.dtype != torch.float32 and image.dtype != torch.float16 and image.dtype != torch.bfloat16:
-            image = image.float()
-
-        if image.dim() == 3:
-            image = image.unsqueeze(0)
-
-        b, h, w, c = image.shape
-        if c not in (3, 4):
-            raise ValueError(f"Expected IMAGE with 3 or 4 channels, got {c}")
-
-        rgb = image[..., :3].clamp(0.0, 1.0)
-
-        target = torch.tensor([tr, tg, tb], device=image.device, dtype=image.dtype)
-        diff = rgb - target
-        dist = torch.sqrt(torch.sum(diff * diff, dim=-1))  # [B,H,W]
-
-        remove_mask = dist < float(threshold)  # [B,H,W] bool
-
-        if c == 4 and keep_original_alpha:
-            alpha = image[..., 3].clamp(0.0, 1.0)
-        else:
-            alpha = torch.ones((b, h, w), device=image.device, dtype=image.dtype)
-
-        alpha = torch.where(remove_mask, torch.zeros_like(alpha), alpha)
-
-        out = torch.cat([rgb, alpha.unsqueeze(-1)], dim=-1)  # [B,H,W,4]
-        return (out,)
-
-
-class BlackBGRemoveSmart:
+class RemoveColorBG:
     """
     Remove a target-color background while preserving similar-colored regions inside the subject.
     Only removes pixel regions connected to the image border,
