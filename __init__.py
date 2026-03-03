@@ -1,5 +1,4 @@
 from .extract_layer import ExtractTransparentLayer
-from .color_to_transparent import ColorToTransparent
 from .extract_mask_border import ExtractMaskBorder
 from .remove_color_bg import RemoveColorBG
 
