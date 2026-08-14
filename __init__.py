@@ -2,6 +2,7 @@ from .alpha_threshold import AlphaThreshold
 from .extract_layer import ExtractTransparentLayer
 from .extract_mask_border import ExtractMaskBorder
 from .remove_color_bg import RemoveColorBG
+from .QwenAutoStitch import QwenAutoStitch
 from .nodes_qwen import (
     TextEncodeQwenImageEditCodewave,
     TextEncodeQwenImageEditPlusCodewave,
@@ -13,6 +14,7 @@ NODE_CLASS_MAPPINGS = {
     "ExtractTransparentLayer": ExtractTransparentLayer,
     "ExtractMaskBorder": ExtractMaskBorder,
     "RemoveColorBG": RemoveColorBG,
+    "QwenAutoStitch": QwenAutoStitch,
     "TextEncodeQwenImageEditCodewave": TextEncodeQwenImageEditCodewave,
     "TextEncodeQwenImageEditPlusCodewave": TextEncodeQwenImageEditPlusCodewave,
     "EmptyQwenImageLayeredLatentImageCodewave": EmptyQwenImageLayeredLatentImageCodewave,
@@ -23,6 +25,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "ExtractTransparentLayer": "Extract Transparent Layer",
     "ExtractMaskBorder": "Extract Mask Border",
     "RemoveColorBG": "Remove Color BG",
+    "QwenAutoStitch": "Qwen Auto Stitch (Diff Mask)",
     "TextEncodeQwenImageEditCodewave": "Text Encode Qwen Image Edit (Codewave)",
     "TextEncodeQwenImageEditPlusCodewave": "Text Encode Qwen Image Edit Plus (Codewave)",
     "EmptyQwenImageLayeredLatentImageCodewave": "Empty Qwen Image Layered Latent (Codewave)",
