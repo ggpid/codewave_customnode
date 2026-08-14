@@ -2,7 +2,7 @@ from .alpha_threshold import AlphaThreshold
 from .extract_layer import ExtractTransparentLayer
 from .extract_mask_border import ExtractMaskBorder
 from .remove_color_bg import RemoveColorBG
-from .QwenAutoStitch import QwenAutoStitch
+from .qwen_auto_stitch import QwenAutoStitch
 from .nodes_qwen import (
     TextEncodeQwenImageEditCodewave,
     TextEncodeQwenImageEditPlusCodewave,
