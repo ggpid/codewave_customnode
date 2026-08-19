@@ -27,6 +27,12 @@ class RemoveColorBG:
         return {
             "required": {
                 "image": ("IMAGE",),
+                "onoff": ("BOOLEAN", {
+                    "default": True,
+                    "label_on": "on",
+                    "label_off": "off",
+                    "tooltip": "On = remove background. Off = bypass input to output.",
+                }),
                 "target_color": ("STRING", {
                     "default": "#000000",
                     "tooltip": "Hex color code of the background to remove (e.g. #000000 for black, #FFFFFF for white, #00FF00 for green)."
@@ -69,7 +75,11 @@ class RemoveColorBG:
         feather_radius: int,
         connectivity: str,
         keep_original_alpha: bool,
+        onoff: bool = True,
     ):
+        if not onoff:
+            return (image,)
+
         tr, tg, tb = _parse_hex_color(target_color)
         target_np = np.array([tr, tg, tb], dtype=np.float32)
 
