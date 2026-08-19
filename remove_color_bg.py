@@ -27,12 +27,6 @@ class RemoveColorBG:
         return {
             "required": {
                 "image": ("IMAGE",),
-                "onoff": ("BOOLEAN", {
-                    "default": True,
-                    "label_on": "on",
-                    "label_off": "off",
-                    "tooltip": "On = remove background. Off = bypass input to output.",
-                }),
                 "target_color": ("STRING", {
                     "default": "#000000",
                     "tooltip": "Hex color code of the background to remove (e.g. #000000 for black, #FFFFFF for white, #00FF00 for green)."
@@ -59,7 +53,15 @@ class RemoveColorBG:
                     "default": True,
                     "tooltip": "If input has alpha, preserve it for non-removed pixels."
                 }),
-            }
+            },
+            "optional": {
+                "onoff": ("BOOLEAN", {
+                    "default": True,
+                    "label_on": "on",
+                    "label_off": "off",
+                    "tooltip": "On = remove background. Off = bypass input to output. Missing input defaults to on.",
+                }),
+            },
         }
 
     RETURN_TYPES = ("IMAGE",)
