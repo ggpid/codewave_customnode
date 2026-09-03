@@ -14,6 +14,22 @@ def _parse_hex_color(hex_str: str) -> tuple[float, float, float]:
     return (r, g, b)
 
 
+def _local_color_range(rgb_np: np.ndarray) -> np.ndarray:
+    """
+    Per-pixel edge strength: the 3x3 value spread, taken across channels.
+
+    Uses the second-lowest and second-highest samples rather than the true min and max,
+    so a single noisy pixel does not register as an edge while a real outline - which
+    occupies several pixels of the window - still does.
+
+    Deliberately unsmoothed: blurring first would bleed an outline's contrast into the
+    middle of narrow background gaps (between hair strands or fingers) and wall them off.
+    """
+    hi = ndimage.rank_filter(rgb_np, rank=-2, size=(3, 3, 1), mode="nearest")
+    lo = ndimage.rank_filter(rgb_np, rank=1, size=(3, 3, 1), mode="nearest")
+    return np.max(hi - lo, axis=-1)
+
+
 def _border_median_color(rgb_np: np.ndarray) -> np.ndarray:
     """Median color of the 1px border ring, used as the actual background color."""
     ring = np.concatenate([
@@ -33,6 +49,10 @@ class RemoveColorBGAdvanced:
     separate parameters, so background pixels that merely approximate the target color
     (e.g. #FCFEFC against a #FFFFFF target) become fully transparent instead of keeping
     a residual alpha that shows up as noise when composited.
+
+    Background detection spreads from the image border and is blocked by object
+    outlines, so raising the tolerance does not let the removal leak through
+    anti-aliased edges into similarly colored areas inside the subject.
     """
 
     @classmethod
@@ -110,6 +130,13 @@ class RemoveColorBGAdvanced:
                     "default": True,
                     "tooltip": "If input has alpha, preserve it for non-removed pixels."
                 }),
+                "edge_barrier": ("FLOAT", {
+                    "default": 0.02,
+                    "min": 0.0,
+                    "max": 1.0,
+                    "step": 0.001,
+                    "tooltip": "Stops background detection from spreading across object outlines. A pixel whose local color variation exceeds this acts as a wall, so a high tolerance cannot leak into the subject. Raise it if parts of the background survive, lower it if the subject still gets eaten. 0 = disabled."
+                }),
             },
             "optional": {
                 "onoff": ("BOOLEAN", {
@@ -142,6 +169,7 @@ class RemoveColorBGAdvanced:
         despill: bool,
         clear_removed_rgb: bool,
         keep_original_alpha: bool,
+        edge_barrier: float = 0.02,
         onoff: bool = True,
     ):
         if image.dim() == 3:
@@ -190,7 +218,24 @@ class RemoveColorBGAdvanced:
 
             color_mask = dist <= detect_range
 
-            labeled, _ = ndimage.label(color_mask, structure=structure)
+            if edge_barrier > 0.0:
+                edge_map = _local_color_range(rgb_np)
+                # Grain in the background reads as a weak edge everywhere and would wall
+                # the fill in before it spreads. Measure that floor along the image border
+                # and never let the barrier sit below it.
+                ring = np.concatenate([
+                    edge_map[0, :], edge_map[-1, :], edge_map[:, 0], edge_map[:, -1]
+                ])
+                # 1.75x the median clears the grain's own spread (~1.5x) with a little
+                # headroom, and still lands well under the contrast of a real outline.
+                effective_barrier = max(float(edge_barrier), 1.75 * float(np.median(ring)))
+                blocked = color_mask & (edge_map > effective_barrier)
+                passable = color_mask & ~blocked
+            else:
+                blocked = None
+                passable = color_mask
+
+            labeled, _ = ndimage.label(passable, structure=structure)
 
             border_labels = set()
             border_labels |= set(labeled[0, :].ravel())
@@ -203,6 +248,19 @@ class RemoveColorBGAdvanced:
                 remove_mask = np.isin(labeled, list(border_labels))
             else:
                 remove_mask = np.zeros_like(color_mask)
+
+            # The barrier also walls off specks of genuine background (noise, faint
+            # texture). Reclaim any pocket that the background fully encloses and that
+            # consists only of walled-off pixels; a pocket holding reachable pixels is
+            # part of the subject and stays.
+            if blocked is not None and remove_mask.any() and blocked.any():
+                pockets = ndimage.binary_fill_holes(remove_mask) & ~remove_mask
+                if pockets.any():
+                    pocket_labeled, pocket_count = ndimage.label(pockets)
+                    rejected = np.unique(pocket_labeled[~blocked])
+                    keep = np.setdiff1d(np.arange(1, pocket_count + 1), rejected)
+                    if keep.size:
+                        remove_mask |= np.isin(pocket_labeled, keep)
 
             if edge_expand > 0:
                 remove_mask = ndimage.binary_dilation(
