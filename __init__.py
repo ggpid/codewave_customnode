@@ -3,6 +3,7 @@ from .extract_layer import ExtractTransparentLayer
 from .extract_mask_border import ExtractMaskBorder
 from .remove_color_bg import RemoveColorBG
 from .qwen_auto_stitch import QwenAutoStitch
+from .sam3_nodes import Sam3ModelLoaderCodewave, Sam3SegmentTiledCodewave
 from .nodes_qwen import (
     TextEncodeQwenImageEditCodewave,
     TextEncodeQwenImageEditPlusCodewave,
@@ -18,6 +19,8 @@ NODE_CLASS_MAPPINGS = {
     "TextEncodeQwenImageEditCodewave": TextEncodeQwenImageEditCodewave,
     "TextEncodeQwenImageEditPlusCodewave": TextEncodeQwenImageEditPlusCodewave,
     "EmptyQwenImageLayeredLatentImageCodewave": EmptyQwenImageLayeredLatentImageCodewave,
+    "Sam3ModelLoaderCodewave": Sam3ModelLoaderCodewave,
+    "Sam3SegmentTiledCodewave": Sam3SegmentTiledCodewave,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -29,6 +32,8 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "TextEncodeQwenImageEditCodewave": "Text Encode Qwen Image Edit (Codewave)",
     "TextEncodeQwenImageEditPlusCodewave": "Text Encode Qwen Image Edit Plus (Codewave)",
     "EmptyQwenImageLayeredLatentImageCodewave": "Empty Qwen Image Layered Latent (Codewave)",
+    "Sam3ModelLoaderCodewave": "Load SAM3 Model (Codewave)",
+    "Sam3SegmentTiledCodewave": "SAM3 Segment Tiled (Codewave)",
 }
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]
