@@ -120,10 +120,12 @@ class Sam3SegmentTiledCodewave:
                 "threshold": ("FLOAT", {
                     "default": 0.5, "min": 0.05, "max": 0.95, "step": 0.05,
                     "tooltip": "검출 신뢰도 임계값. 놓치는 게 있으면 낮추세요."}),
-                "mode": (["tiled+refine", "tiled", "two-stage", "single"], {
+                "mode": (["tiled+refine", "tiled", "verified+refine", "verified", "two-stage", "single"], {
                     "default": "tiled+refine",
                     "tooltip": "tiled+refine: 타일링 + 객체별 원본 해상도 재추론 (가장 정확)\n"
                                "tiled: 전체 + 겹치는 타일 (SAHI)\n"
+                               "verified(+refine): 전체 이미지(single) 결과로 '무엇이 대상인지' 판정하고, 타일 결과로 테두리만 가져옴. "
+                               "single에서 안 잡힌 타일 검출은 버림 (single의 인식 + 타일의 깔끔한 테두리)\n"
                                "two-stage: 축소 이미지에서 찾고 객체별 원본 해상도 재추론\n"
                                "single: 한 번에 추론 (SAM 기본, 비교용)"}),
                 "tile_size": ("INT", {
@@ -143,6 +145,13 @@ class Sam3SegmentTiledCodewave:
                 "min_area": ("INT", {
                     "default": 0, "min": 0, "max": 1000000, "step": 16,
                     "tooltip": "이보다 작은 객체(픽셀 수)는 버립니다."}),
+                "verify_overlap": ("FLOAT", {
+                    "default": 0.5, "min": 0.1, "max": 1.0, "step": 0.05,
+                    "tooltip": "verified 모드: 타일 검출의 이 비율 이상이 전체 이미지 검출 안에 있어야 채택. 높일수록 엄격."}),
+                "verify_margin": ("INT", {
+                    "default": 0, "min": 0, "max": 64, "step": 1,
+                    "tooltip": "verified 모드: 전체 이미지 마스크를 이만큼(px) 넓혀서 판정·자르기. 0 = 자동 (이미지 크기 비례). "
+                               "테두리가 잘리면 키우고, 옆으로 번지면 줄이세요."}),
                 "invert": ("BOOLEAN", {
                     "default": False,
                     "tooltip": "켜면 세그멘테이션된 부분을 투명하게 (나머지를 남김)."}),
@@ -155,7 +164,7 @@ class Sam3SegmentTiledCodewave:
     CATEGORY = "codewave/sam3"
 
     def segment(self, sam3_model, image, prompt, threshold, mode, tile_size, overlap,
-                merge_overlap=0.5, refine_padding=0.15, min_area=0, invert=False):
+                merge_overlap=0.5, refine_padding=0.15, min_area=0, invert=False, verify_overlap=0.5, verify_margin=0):
         try:
             import comfy.utils
             import comfy.model_management as mm
@@ -169,6 +178,7 @@ class Sam3SegmentTiledCodewave:
             rgb = image[b, ..., :3].clamp(0, 1)
             pil = Image.fromarray((rgb.cpu().numpy() * 255.0).round().astype(np.uint8))
             pbar = comfy.utils.ProgressBar(100) if comfy is not None else None
+            stats = {}
 
             def progress(done, total, pbar=pbar):
                 if pbar is not None:
@@ -176,7 +186,10 @@ class Sam3SegmentTiledCodewave:
             mask, insts = sam3_core.segment(
                 sam3_model, pil, prompt, threshold=threshold, mode=mode, tile_size=tile_size, overlap=overlap,
                 merge_ios=merge_overlap, refine_pad=refine_padding, min_area=min_area,
-                progress=progress, interrupt=interrupt)
+                verify_frac=verify_overlap, verify_margin=verify_margin, progress=progress, interrupt=interrupt, stats=stats)
+            if mode.startswith("verified") and stats.get("tiles"):
+                print(f"[SAM3 Codewave] verified: {stats['tiles']} tiles, {stats['dropped']} tile detections not in the "
+                      f"whole-image result dropped (margin {stats['margin']} px)")
             count += len(insts)
             m = torch.from_numpy(mask).to(device=image.device, dtype=image.dtype)
             if invert:

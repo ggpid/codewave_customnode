@@ -12,6 +12,10 @@ edges. `segment()` combines two remedies:
   2. Two-stage refinement: every merged instance is segmented again on a square crop around it at original
      resolution (when that crop is smaller than a tile, i.e. actually finer). The crop's detection that best
      overlaps the instance replaces its mask -> much sharper edges.
+  3. Verification ("verified" modes): the whole-image pass decides WHAT is an object (it sees the context the model
+     was trained on, so it has fewer false positives), the tiles only supply the sharp masks. Tile detections that
+     do not overlap a whole-image detection are dropped; the kept ones are clipped to the (slightly dilated)
+     whole-image mask, so a tile mask cannot spread into neighbouring wrong regions.
 
 Checkpoints: the official `sam3.pt` (keys prefixed with `detector.`), SAM 3 trainer checkpoints ({"model": ...}),
 img-toolkit fine-tuning snapshots (`ckpts/epoch_N.pt`) and plain state dicts (.pt/.pth/.safetensors).
@@ -247,6 +251,74 @@ def merge(insts, ios_thr=0.5):
     return out
 
 
+# ------------------------------------------------------------------ verification (whole-image pass gates tiles)
+
+def _dilate(inst: Inst, r: int, W: int, H: int):
+    """Instance grown by r px (square kernel), clipped to the image."""
+    if r <= 0:
+        return inst
+    from PIL import ImageFilter
+    x0, y0 = max(0, inst.x0 - r), max(0, inst.y0 - r)
+    x1, y1 = min(W, inst.x1 + r), min(H, inst.y1 + r)
+    m = np.zeros((y1 - y0, x1 - x0), np.uint8)
+    m[inst.y0 - y0:inst.y1 - y0, inst.x0 - x0:inst.x1 - x0] = inst.mask * 255
+    k = 2 * r + 1
+    img = Image.fromarray(m)
+    while k > 1:  # MaxFilter is O(k^2); a few passes of <=9 px kernels give the same square dilation
+        step = min(k, 9) if min(k, 9) % 2 else min(k, 9) - 1
+        img = img.filter(ImageFilter.MaxFilter(step))
+        k -= step - 1
+    return Inst(x0=x0, y0=y0, mask=np.asarray(img) > 127, score=inst.score, fine=inst.fine)
+
+
+def _clip(inst: Inst, region: Inst):
+    """inst AND region, or None when empty."""
+    x0, y0, x1, y1 = max(inst.x0, region.x0), max(inst.y0, region.y0), min(inst.x1, region.x1), min(inst.y1, region.y1)
+    if x0 >= x1 or y0 >= y1:
+        return None
+    m = inst.mask[y0 - inst.y0:y1 - inst.y0, x0 - inst.x0:x1 - inst.x0] & \
+        region.mask[y0 - region.y0:y1 - region.y0, x0 - region.x0:x1 - region.x0]
+    if not m.any():
+        return None
+    ys, xs = np.nonzero(m)
+    return Inst(x0=x0 + int(xs.min()), y0=y0 + int(ys.min()), mask=m[ys.min():ys.max() + 1, xs.min():xs.max() + 1].copy(),
+                score=inst.score, fine=inst.fine)
+
+
+def verify(global_insts, tile_insts, W, H, margin, keep_frac=0.5, merge_ios=0.5):
+    """Whole-image detections decide which objects exist; tiles give their masks.
+
+    A tile detection is kept only if >= keep_frac of it lies inside a whole-image detection grown by `margin` px
+    (the whole-image mask is coarse, its edges can be off by a few px). Each whole-image object then takes the union
+    of its tile detections clipped to that grown region (sharp edges, no spill into wrong areas); when the tiles cover
+    less than half of it (a part no tile detected) the whole-image mask fills in. Whole-image objects no tile found
+    keep their whole-image mask. Tile-only detections are dropped -> no extra false positives from the tiles.
+    Returns (instances, dropped tile detections)."""
+    globals_ = merge(global_insts, merge_ios) if global_insts else []
+    grown = [_dilate(g, margin, W, H) for g in globals_]
+    pieces = [[] for _ in globals_]
+    dropped = 0
+    for t in tile_insts:
+        best, best_frac = None, keep_frac
+        for k, gr in enumerate(grown):
+            inter = _inter(t, gr)
+            if inter and inter / max(t.area, 1) >= best_frac:
+                best, best_frac = k, inter / max(t.area, 1)
+        if best is None:
+            dropped += 1
+        else:
+            pieces[best].append(t)
+    out = []
+    for g, gr, ps in zip(globals_, grown, pieces):
+        clipped = [c for c in (_clip(p, gr) for p in ps) if c is not None]
+        if not clipped:
+            out.append(g)
+            continue
+        fu = _union(clipped)
+        out.append(fu if fu.area >= 0.5 * g.area else _union([fu, g]))
+    return out, dropped
+
+
 # ------------------------------------------------------------------ tiling + refinement
 
 def _positions(length, tile, step):
@@ -288,13 +360,18 @@ def _iou_in_crop(inst: Inst, det_mask, x0, y0):
 
 def segment(m: Sam3Model, image: Image.Image, prompts, threshold=0.5, mode="tiled+refine", tile_size=1024,
             overlap=0.25, merge_ios=0.5, refine_pad=0.15, refine_match=0.3, min_area=0, max_refine=500,
-            progress=None, interrupt=None):
+            verify_frac=0.5, verify_margin=0, progress=None, interrupt=None, stats=None):
     """Union mask (bool HxW, full resolution) of every instance of `prompts`, plus the instance list.
 
     mode: "single"      one pass on the whole image (SAM 3 default behaviour, for comparison)
           "tiled"       whole-image pass + overlapping tiles, merged
           "two-stage"   whole-image pass, then each instance re-segmented on a crop at original resolution
           "tiled+refine" tiles, then each instance re-segmented on a crop (most accurate, slowest)
+          "verified"    whole-image pass decides what is an object, tiles give the masks (single's recognition +
+                        tiled's edges; tile-only detections are dropped)
+          "verified+refine" verified, then each instance re-segmented on a crop
+    verify_margin: px the coarse whole-image mask is grown by before gating/clipping (0 = auto, ~2 px of the
+    whole-image pass's resolution). stats (dict, optional) receives counters such as dropped tile detections.
     progress(done, total) and interrupt() are optional callbacks (ComfyUI progress bar / cancel).
     """
     image = image.convert("RGB")
@@ -302,8 +379,13 @@ def segment(m: Sam3Model, image: Image.Image, prompts, threshold=0.5, mode="tile
     prompts = [p.strip() for p in (prompts.split(",") if isinstance(prompts, str) else prompts) if p.strip()]
     if not prompts:
         raise ValueError("프롬프트를 입력하세요 (쉼표로 여러 개)")
-    use_tiles = mode in ("tiled", "tiled+refine") and max(W, H) > tile_size * 1.15
-    use_refine = mode in ("two-stage", "tiled+refine")
+    verified = mode in ("verified", "verified+refine")
+    use_tiles = mode in ("tiled", "tiled+refine", "verified", "verified+refine") and max(W, H) > tile_size * 1.15
+    use_refine = mode in ("two-stage", "tiled+refine", "verified+refine")
+    # coarse whole-image mask edges are off by about a pixel of the 1008 px SAM input -> a few px of the original
+    margin = int(verify_margin) if verify_margin else max(2, int(np.ceil(2.5 * max(W, H) / SAM3_RES)))
+    if stats is not None:
+        stats.update(tiles=len(tile_grid(W, H, tile_size, overlap)) if use_tiles else 0, dropped=0, margin=margin)
     tiles = tile_grid(W, H, tile_size, overlap) if use_tiles else []
 
     # the whole-image pass runs on a downscaled copy: SAM resizes to 1008 anyway, this just saves transfer/memory
@@ -322,20 +404,25 @@ def segment(m: Sam3Model, image: Image.Image, prompts, threshold=0.5, mode="tile
 
     all_insts = []
     for p in prompts:
-        insts = []
+        g_insts, t_insts = [], []
         for d in detect(m, g_img, p, threshold):
             i = _inst(d.mask, 0, 0, d.score, fine=False, scale=g_scale)
             if i is not None:
-                insts.append(i)
+                g_insts.append(i)
         step()
         for (x, y, t) in tiles:
             crop = image.crop((x, y, x + t, y + t))
             for d in detect(m, crop, p, threshold):
                 i = _inst(d.mask, x, y, d.score, fine=True)
                 if i is not None:
-                    insts.append(i)
+                    t_insts.append(i)
             step()
-        insts = merge(insts, merge_ios) if insts else []
+        if verified:
+            insts, dropped = verify(g_insts, t_insts, W, H, margin, verify_frac, merge_ios)
+            if stats is not None:
+                stats["dropped"] += dropped
+        else:
+            insts = merge(g_insts + t_insts, merge_ios) if (g_insts or t_insts) else []
 
         if use_refine and insts:
             todo = [k for k, i in enumerate(insts) if _square_crop(i, W, H, refine_pad)[2] < tile_size][:max_refine]
